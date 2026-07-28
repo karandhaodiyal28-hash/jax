@@ -4796,6 +4796,47 @@ class AsyncCopyTest(TestCase, jtu.CudaArchSpecificTest):
     self._test_cp_async(shape, dtype, swizzle=swizzle, tiling=tiling)
 
   @parameterized.product(
+      swizzle=(32, 128),
+      dtype=(jnp.float32, jnp.float16),
+  )
+  def test_cp_async_tiled_sliced(self, swizzle, dtype):
+    bw = bitwidth(dtype_to_ir_type(dtype))
+    swizzle_elems = 8 * swizzle // bw
+    tiling = (8, swizzle_elems)
+
+    full_shape = (256, 128)
+    slices = (slice(64, 128), slice(32, 96))
+    slice_shape = tuple(s.stop - s.start for s in slices)
+
+    def kernel(ctx, src, dst, scratch):
+      tmp, barrier = scratch
+      ctx.async_copy(
+          src_ref=src,
+          dst_ref=tmp,
+          gmem_slice=slices,
+          swizzle=swizzle,
+          gmem_transform=mgpu.TileTransform(tiling),
+          implementation=mgpu.AsyncCopyImplementation.CP_ASYNC,
+          barrier=barrier,
+      )
+      barrier.wait()
+      mgpu.copy_tiled(tmp, dst, swizzle=swizzle)
+
+    x = np.arange(np.prod(full_shape), dtype=dtype).reshape(full_shape)
+    smem_shape = mgpu.tile_shape(slice_shape, tiling)
+    smem = jax.ShapeDtypeStruct(smem_shape, dtype)
+    out = jax.ShapeDtypeStruct(slice_shape, dtype)
+    y = mgpu.as_gpu_kernel(
+        kernel,
+        (1, 1, 1),
+        (128, 1, 1),
+        x,
+        out,
+        (smem, mgpu.Barrier(arrival_count=1)),
+    )(x)
+    np.testing.assert_array_equal(y, x[slices])
+
+  @parameterized.product(
       shape=((64, 128), (128, 40), (5, 256)),
       dtype=(jnp.float32, jnp.float16),
   )
@@ -6204,6 +6245,35 @@ class FragmentedArrayTest(TestCase):
     )
     self.assertIn(expected_instr, ptx())
     self.assertNotIn("st.shared", ptx())
+
+  @parameterized.product(
+      dtype=(jnp.int16,),
+      transpose=(False, True),
+  )
+  def test_stmatrix_invalid(self, dtype, transpose):
+    m, k = 128, 128
+    dtype = jnp.dtype(dtype)
+    swizzle = 16
+    def kernel(ctx, x, out, x_smem):
+      mma_layouts = mgpu.MMALayouts(utils.dtype_to_ir_type(dtype))
+      x_fa = mgpu.FragmentedArray.load_untiled(
+          x, layout=mma_layouts.lhs, is_signed=True, optimized=False
+      )
+      x_smem_store = x_smem
+      if transpose:
+        x_smem_store = mgpu.memref_transpose(x_smem, (1, 0))
+      x_fa.store_untiled(x_smem_store, swizzle=swizzle)
+      mgpu.warpgroup_barrier()
+      copy(x_smem, out, swizzle)
+
+    x = self.prng.integers(-10000, 10000, (m, k)).astype(dtype)
+    out_shape = (k, m) if transpose else (m, k)
+    with self.assertRaises(fa.TransferPlanDerivationError):
+      mgpu.as_gpu_kernel(
+          kernel, (1, 1, 1), (128, 1, 1), x,
+          jax.ShapeDtypeStruct(out_shape, dtype),
+          jax.ShapeDtypeStruct(out_shape, dtype),
+      )(x)
 
 
 class ProfilerTest(TestCase, jtu.JaxTestCase):
