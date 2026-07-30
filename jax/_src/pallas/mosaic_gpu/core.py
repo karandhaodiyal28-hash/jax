@@ -788,6 +788,7 @@ class UntilingTransform(state_types.Transform):
 
     new_tiling = tuple(self.tiling[i - off] for i in new_suffix)
     new_transpose = state_types.TransposeTransform((*perm, *new_suffix))
+    print(self, transpose, "->", new_transpose, new_tiling)
     return new_transpose, dataclasses.replace(self, tiling=new_tiling)
 
   def commute_ndindexer(
