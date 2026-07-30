@@ -52,6 +52,16 @@ def extend_compute_type(c_type: str | None):
     config.compute_on_context_manager.set_local(prev)
 
 
+@contextmanager
+def compute_on(compute_type: str):
+  if not isinstance(compute_type, str):
+    raise TypeError("`compute_on`'s compute_type argument must be a string.")
+  _check_valid(compute_type)
+
+  with extend_compute_type(compute_type):
+    yield
+
+
 def _check_valid(c_type: str):
   if (c_type not in {'device_host', 'device', 'tpu_sparsecore'}
       and not c_type.startswith("gpu_stream:")):
@@ -73,10 +83,10 @@ def _compute_on2(f, *, compute_type, out_memory_spaces, compiler_options):
     raise TypeError("`compute_on`'s compute_type argument must be a string.")
   _check_valid(compute_type)
 
-  def wrapped(*args):
+  def wrapped(*args, **kwargs):
     nonlocal compiler_options
-    dbg = debug_info('compute_on', f, args, {})
-    args_flat, in_tree = tree_flatten((args, {}))
+    dbg = debug_info('compute_on', f, args, kwargs)
+    args_flat, in_tree = tree_flatten((args, kwargs))
     in_avals = tuple(core.shaped_abstractify(x) for x in args_flat)
     with extend_compute_type(compute_type):
       jaxpr, out_avals = pe.trace_to_jaxpr(
@@ -104,6 +114,7 @@ def _compute_on2(f, *, compute_type, out_memory_spaces, compiler_options):
         out_memory_spaces=tuple(out_memory_spaces_flat),
         compiler_options_json=compiler_options_json)
     return tree_unflatten(out_tree, outs_flat)
+
   return wrapped
 
 compute_on_p = core.Primitive('compute_on')
