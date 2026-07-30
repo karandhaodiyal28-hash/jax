@@ -20,6 +20,7 @@ import dataclasses
 import enum
 import functools
 import inspect
+import itertools
 import logging
 import math
 from typing import Any, Literal, overload
@@ -632,8 +633,7 @@ def _is_contiguous_shape_slice(
   shape = ref_ty.shape[dim_slice]
 
   # Check that each dimension fits exactly it the immediately larger stride.
-  ss = sorted(zip(strides, shape), key=lambda x: x[0], reverse=True)
-  for (prev_stride, _), (stride, shape) in zip(ss, ss[1:]):
+  for (prev_stride, _), (stride, shape) in itertools.pairwise(zip(strides, shape)):
     if stride * shape != prev_stride:
       return False
 
@@ -2138,8 +2138,8 @@ def is_known_divisible(value: ir.Value, divisor: int, max_depth=10) -> bool:
       return is_known_divisible(
           def_op.lhs, divisor, new_depth
       ) and is_known_divisible(def_op.rhs, divisor, new_depth)
-    case arith.AddIOp() | arith.SubIOp():
-      # Only cover the common case where both operads are divisible.
+    case arith.AddIOp() | arith.SubIOp() | arith.RemUIOp() | arith.RemSIOp():
+      # Only cover the common case where both operands are divisible.
       return is_known_divisible(
           def_op.lhs, divisor, new_depth
       ) and is_known_divisible(def_op.rhs, divisor, new_depth)
